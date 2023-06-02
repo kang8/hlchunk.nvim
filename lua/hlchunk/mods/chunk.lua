@@ -1,6 +1,9 @@
 local BaseMod = require("hlchunk.base_mod")
 local utils = require("hlchunk.utils.utils")
 local ft = require("hlchunk.utils.filetype")
+local timer = require("hlchunk.utils.timer")
+local ctx_manager = require("hlchunk.utils.context_manager")
+local ani_manager = require("hlchunk.utils.animation_manager")
 local api = vim.api
 local fn = vim.fn
 
@@ -16,8 +19,11 @@ local chunk_mod = BaseMod:new({
             vertical_line = "│",
             left_top = "╭",
             left_bottom = "╰",
+            left_arrow = "<",
+            bottom_arrow = "V",
             right_arrow = ">",
         },
+        interval = 8,
         style = {
             { fg = "#806d9c" },
         },
@@ -31,77 +37,51 @@ function chunk_mod:render()
         return
     end
 
-    self:clear()
     self.ns_id = api.nvim_create_namespace("hlchunk")
 
     local cur_chunk_range = utils.get_chunk_range(nil, { use_treesitter = self.options.use_treesitter })
     if cur_chunk_range and cur_chunk_range[1] < cur_chunk_range[2] then
         local beg_row, end_row = unpack(cur_chunk_range)
-        local beg_blank_len = fn.indent(beg_row)
-        local end_blank_len = fn.indent(end_row)
-        local start_col = math.max(math.min(beg_blank_len, end_blank_len) - vim.o.shiftwidth, 0)
-        local offset = fn.winsaveview().leftcol
+        local same = ctx_manager.is_same_context(beg_row, end_row)
 
-        local get_width = api.nvim_strwidth
+        if (not ani_manager.get_running() and not same) or not same then
+            local beg_blank_len, end_blank_len = fn.indent(beg_row), fn.indent(end_row)
+            local start_col = math.max(math.min(beg_blank_len, end_blank_len) - vim.o.shiftwidth, 0)
 
-        local row_opts = {
-            virt_text_pos = "overlay",
-            hl_mode = "combine",
-            priority = 100,
-        }
+            ani_manager.set_running(true)
+            self:clear()
 
-        -- render beg_row
-        if beg_blank_len > 0 then
-            local virt_text_len = beg_blank_len - start_col
-            local beg_virt_text = self.options.chars.left_top
-                .. self.options.chars.horizontal_line:rep(virt_text_len - 1)
+            local opts = { virt_text = {}, offset = {}, line_num = {} }
+            local start_range = beg_row - beg_blank_len + start_col
+            local end_range = end_row + end_blank_len - start_col
 
-            if not utils.col_in_screen(start_col) then
-                local byte_idx = math.min(offset - start_col, virt_text_len)
-                if byte_idx > get_width(beg_virt_text) then
-                    byte_idx = get_width(beg_virt_text)
+            for i = start_range + 1, end_range - 1, 1 do
+                local virt_text = self.options.chars["vertical_line"]
+                local line_num = i
+                local offset = start_col - fn.winsaveview().leftcol
+
+                if beg_row > i then
+                    virt_text = self.options.chars["horizontal_line"]
+                    offset, line_num = offset - (i - beg_row), beg_row
+                elseif end_row < i then
+                    virt_text = self.options.chars["horizontal_line"]
+                    offset, line_num = offset + (i - end_row), end_row
+                elseif beg_row == i then
+                    virt_text = self.options.chars["left_top"]
+                elseif end_row == i then
+                    virt_text = self.options.chars["left_bottom"]
                 end
-                local utfBeg = vim.str_byteindex(beg_virt_text, byte_idx)
-                beg_virt_text = beg_virt_text:sub(utfBeg + 1)
+
+                opts.virt_text[i - start_range] = virt_text
+                opts.offset[i - start_range] = offset
+                opts.line_num[i - start_range] = line_num
             end
 
-            row_opts.virt_text = { { beg_virt_text, "HLChunk1" } }
-            row_opts.virt_text_win_col = math.max(start_col - offset, 0)
-            api.nvim_buf_set_extmark(0, self.ns_id, beg_row - 1, 0, row_opts)
+            timer.start_draw(self.ns_id, opts, end_range - start_range)
         end
-
-        -- render end_row
-        if end_blank_len > 0 then
-            local virt_text_len = end_blank_len - start_col
-            local end_virt_text = self.options.chars.left_bottom
-                .. self.options.chars.horizontal_line:rep(end_blank_len - start_col - 2)
-                .. self.options.chars.right_arrow
-
-            if not utils.col_in_screen(start_col) then
-                local byte_idx = math.min(offset - start_col, virt_text_len)
-                if byte_idx > get_width(end_virt_text) then
-                    byte_idx = get_width(end_virt_text)
-                end
-                local utfBeg = vim.str_byteindex(end_virt_text, byte_idx)
-                end_virt_text = end_virt_text:sub(utfBeg + 1)
-            end
-            row_opts.virt_text = { { end_virt_text, "HLChunk1" } }
-            row_opts.virt_text_win_col = math.max(start_col - offset, 0)
-            api.nvim_buf_set_extmark(0, self.ns_id, end_row - 1, 0, row_opts)
-        end
-
-        -- render middle section
-        for i = beg_row + 1, end_row - 1 do
-            row_opts.virt_text = { { self.options.chars.vertical_line, "HLChunk1" } }
-            row_opts.virt_text_win_col = start_col - offset
-            local space_tab = (" "):rep(vim.o.shiftwidth)
-            local line_val = fn.getline(i):gsub("\t", space_tab)
-            if #fn.getline(i) <= start_col or line_val:sub(start_col + 1, start_col + 1):match("%s") then
-                if utils.col_in_screen(start_col) then
-                    api.nvim_buf_set_extmark(0, self.ns_id, i - 1, 0, row_opts)
-                end
-            end
-        end
+    else
+        self:clear()
+        ctx_manager.clear_context()
     end
 end
 
@@ -119,6 +99,14 @@ function chunk_mod:enable_mod_autocmd()
         pattern = self.options.support_filetypes,
         callback = function()
             chunk_mod:render()
+        end,
+    })
+    api.nvim_create_autocmd({ "BufLeave" }, {
+        group = self.augroup_name,
+        pattern = self.options.support_filetypes,
+        callback = function()
+          self:clear()
+          timer.stop_draw()
         end,
     })
     api.nvim_create_autocmd({ "CursorMoved" }, {

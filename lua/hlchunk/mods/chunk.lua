@@ -44,7 +44,7 @@ function chunk_mod:render()
         local beg_row, end_row = unpack(cur_chunk_range)
         local same = ctx_manager.is_same_context(beg_row, end_row)
 
-        if (not ani_manager.get_running() and not same) or not same then
+        if not same then
             local beg_blank_len, end_blank_len = fn.indent(beg_row), fn.indent(end_row)
             local start_col = math.max(math.min(beg_blank_len, end_blank_len) - vim.o.shiftwidth, 0)
 
@@ -105,8 +105,8 @@ function chunk_mod:enable_mod_autocmd()
         group = self.augroup_name,
         pattern = self.options.support_filetypes,
         callback = function()
-          self:clear()
-          timer.stop_draw()
+            self:clear()
+            timer.stop_draw()
         end,
     })
     api.nvim_create_autocmd({ "CursorMoved" }, {
